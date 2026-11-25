@@ -1,46 +1,123 @@
 name: Release
 
+# Versions and releases the Talos Keycloak theme with release-please.
+#
+# On every push to main, release-please reads the conventional commits since the last release and
+# keeps one release PR open: it bumps the version in package.json (fix → patch, feat → minor, feat!
+# or a BREAKING CHANGE footer → major) and adds the commits to CHANGELOG.md. Merging that PR creates
+# the GitHub Release v<version>; this workflow then builds the theme from the tag, attaches
+# keycloakify-aade-theme.jar, and tells people-talos-keycloak to open the PR that bumps its pin.
+#
+# It runs with a token from the org's CI GitHub App: a PR opened with GITHUB_TOKEN doesn't trigger
+# other workflows, so the release PR's checks would never run.
 on:
   push:
     branches: [main]
+  workflow_dispatch:
 
+permissions:
+  contents: read
+
+# Never cancel a release half-way; queue them instead.
 concurrency:
   group: release
   cancel-in-progress: false
 
-permissions:
-  contents: write
-
 jobs:
   release:
+    name: Release PR and release
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - name: Get a token for this repo
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          repositories: people-talos-keycloak-theme
+          permission-contents: write
+          permission-pull-requests: write
 
-      - uses: actions/setup-node@v7
+      - name: Release PR, or release
+        id: release
+        uses: googleapis/release-please-action@v5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      - if: steps.release.outputs.release_created == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag_name }}
+
+      - if: steps.release.outputs.release_created == 'true'
+        uses: actions/setup-node@v7
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      - run: npm ci
+      - if: steps.release.outputs.release_created == 'true'
+        run: npm ci
 
-      - name: Build Keycloak theme
+      # Keycloakify packages the jar with Maven, which the runner image already has.
+      - name: Build the theme jar
+        if: steps.release.outputs.release_created == 'true'
         run: npm run build-keycloak-theme
 
-      - name: Compute tag
-        id: meta
-        run: |
-          version=$(node -p "require('./package.json').version")
-          short_sha=$(git rev-parse --short=7 HEAD)
-          echo "tag=v${version}-${short_sha}" >> "$GITHUB_OUTPUT"
-
-      - name: Create tag and release
+      - name: Attach the jar to the release
+        if: steps.release.outputs.release_created == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.meta.outputs.tag }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
         run: |
-          gh release create "$TAG" dist_keycloak/*.jar \
-            --target "$GITHUB_SHA" \
-            --title "$TAG" \
-            --generate-notes \
-            --latest
+          cd dist_keycloak
+          sha256sum keycloakify-aade-theme.jar > keycloakify-aade-theme.jar.sha256
+          gh release upload "$TAG" keycloakify-aade-theme.jar keycloakify-aade-theme.jar.sha256 --repo "$GITHUB_REPOSITORY"
+
+      # Tells people-talos-keycloak to open the PR that bumps its pin. The dispatch is only a nudge:
+      # that workflow looks the newest release up itself, so a failed send loses nothing.
+      - name: Get a token to notify people-talos-keycloak
+        id: consumer-token
+        if: steps.release.outputs.release_created == 'true'
+        continue-on-error: true
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.CI_APP_CLIENT_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          repositories: people-talos-keycloak
+          permission-contents: write
+
+      - name: Notify people-talos-keycloak
+        if: steps.release.outputs.release_created == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.consumer-token.outputs.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          gh api repos/people-technology-solutions/people-talos-keycloak/dispatches \
+            -f event_type=keycloak-theme-released -f "client_payload[tag]=$TAG"
+
+      - name: Summarize
+        if: always()
+        env:
+          CREATED: ${{ steps.release.outputs.release_created }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+          PR: ${{ steps.release.outputs.pr }}
+        run: |
+          {
+            if [ "$CREATED" = "true" ]; then
+              echo "### Released \`$TAG\`"
+              echo
+              echo "https://github.com/${GITHUB_REPOSITORY}/releases/tag/$TAG, with \`keycloakify-aade-theme.jar\`."
+            elif [ -n "$PR" ]; then
+              echo "### Release PR opened or updated"
+              echo
+              echo "Merge it to release."
+            else
+              echo "### Nothing to release"
+              echo
+              echo "No releasable commit (\`feat\` or \`fix\`) since the last release."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
