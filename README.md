@@ -6,6 +6,35 @@
 
 This starter is based on Vite and Angular. There is also [a native esbuild Angular starter](https://github.com/keycloakify/keycloakify-starter-angular).
 
+# Releases
+
+Versions and releases come from [release-please](https://github.com/googleapis/release-please-action), run by [release.yml](.github/workflows/release.yml) on every push to `main` (configured in [release-please-config.json](release-please-config.json) and [.release-please-manifest.json](.release-please-manifest.json)).
+
+1. **Use conventional commit messages.** PRs are squash-merged with the PR title as the commit message, and [pr-title.yml](.github/workflows/pr-title.yml) checks that the title is one. release-please reads the commits on `main` since the last release:
+
+   | Commit | Bump |
+   | --- | --- |
+   | `fix(…): …` | patch |
+   | `feat(…): …` | minor |
+   | `feat(…)!: …` or a `BREAKING CHANGE:` footer | major |
+   | `chore`, `docs`, `ci`, `build`, `style`, `refactor`, `test` | none, on their own |
+
+2. **A release PR appears** ("chore(main): release x.y.z"). It bumps `version` in `package.json` and adds the commits to [CHANGELOG.md](CHANGELOG.md). It stays open and collects every releasable change until you merge it. Never bump the version by hand.
+3. **Merge it** to release. The workflow creates the GitHub Release `vX.Y.Z`, builds the theme from the tag, and attaches `keycloakify-aade-theme.jar` (with a `.sha256`).
+4. **people-talos-keycloak is notified** with a `keycloak-theme-released` dispatch, so it can open the PR that bumps its pin.
+
+To release something that isn't a `feat` or `fix` on its own, add a `Release-As: x.y.z` footer to its commit message.
+
+The repository is public, so a release's jar downloads without a token:
+
+```bash
+curl -fLO https://github.com/people-technology-solutions/people-talos-keycloak-theme/releases/download/v1.0.0/keycloakify-aade-theme.jar
+```
+
+Pull requests still build the jar ([verify.yml](.github/workflows/verify.yml)) and attach it to the run as an artifact, for trying a change before it's released.
+
+The release workflow runs with short-lived tokens from the org's CI GitHub App: the org variable `CI_APP_CLIENT_ID` (the app's Client ID) and the org secret `CI_APP_PRIVATE_KEY`. A PR opened with the workflow's own `GITHUB_TOKEN` wouldn't trigger the release PR's checks.
+
 # Quick start
 
 ```bash
